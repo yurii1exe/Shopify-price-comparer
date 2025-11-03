@@ -5,6 +5,10 @@
 
 This application aims to help Shopify store owners make data-driven pricing decisions, automate price updates, analyze new products, and propose optimal pricing adjustments based on demand and supply factors.
 
+---
+
+## Core Functionality
+
 1. **Shopify Integration:**
 
    - Retrieve product lists from the Shopify store.
@@ -44,3 +48,31 @@ This application aims to help Shopify store owners make data-driven pricing deci
 6. **Filtering Products with Updated Prices:**
    - Mark products whose prices have changed.
    - Provide a filtered view of such products for administrative review.
+
+---
+
+## Use Cases
+
+1. **Admin Updates Prices Using the “Average” Strategy:**
+
+   - The admin logs into the app’s dashboard.
+   - Chooses the “Update Prices” feature.
+   - Selects “Average” as the strategy.
+   - The system retrieves competitor prices, calculates the average, updates the prices in Shopify, and presents a summary.
+
+2. **New Product Added in Shopify:**
+
+   - A new product is added via the Shopify admin panel.
+   - A Shopify webhook notifies the app.
+   - The app automatically gathers competitor prices, applies the chosen pricing rule, and updates the store’s price if necessary.
+
+3. **Admin Chooses Multiple Pricing Sources:**
+
+   - In the app settings, the admin selects eBay, Amazon, and Google Shopping as sources.
+   - Initiates a price update process.
+   - The system aggregates data from all three sources, calculates the chosen metric, updates prices accordingly, and logs the changes.
+
+4. **Admin Reviews Products with Changed Prices:**
+   - Opens a “Price Changes” tab in the dashboard.
+   - Sees a list of products with recently updated prices.
+   - Can filter by date, product name, or other criteria for further analysis.
