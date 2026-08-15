@@ -5,10 +5,18 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "keywords": [
+    "shopify",
+    "shopify-api",
+    "dynamic-pricing",
+    "price-comparison",
+    "ecommerce",
+    "typescript",
+    "mongodb"
+  ],
+  "author": "Yurii Shchehliuk",
+  "license": "MIT",
+  "description": "Dynamic pricing service for Shopify: competitor price collection, pluggable pricing strategies, Shopify Admin API client. TypeScript, partial implementation.",
   "dependencies": {
     "body-parser": "^1.20.3",
     "dotenv": "^16.4.7",

@@ -8,7 +8,7 @@ interface ShopifyProduct {
 
 export class ShopifyProductMapper {
   static toDomain(shopifyProduct: ShopifyProduct): IProduct {
-    // Беремо перший варіант як основний (спрощений приклад)
+    // Take the first variant as the primary one (simplified example)
     const mainVariant = shopifyProduct.variants[0];
     const currentPrice = parseFloat(mainVariant.price);
 
@@ -19,7 +19,7 @@ export class ShopifyProductMapper {
       competitorPrices: [],
       lastPriceUpdate: null,
       priceChanged: false,
-      _id: undefined as any, // Якщо ви використовуєте Mongoose, _id буде встановлено при збереженні
+      _id: undefined as any, // With Mongoose, _id is assigned on save
     };
   }
 

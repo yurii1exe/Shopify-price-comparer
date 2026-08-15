@@ -1,7 +1,7 @@
 import { IProductRepository } from '../../domain/repositories/IProductRepository';
 import { ShopifyApi } from '../../infrastructure/shopify/ShopifyApi';
 
-// Імітація динамічного ціноутворення на основі попиту та пропозиції
+// Simulation of dynamic pricing based on supply and demand
 export class DynamicPricingService {
   constructor(
     private productRepo: IProductRepository,
@@ -11,13 +11,14 @@ export class DynamicPricingService {
   async applyDynamicPricing() {
     const products = await this.productRepo.getAll();
     for (const product of products) {
-      const demandFactor = Math.random(); // Логіка реальна може базуватися на даних продажів, переглядів
+      // Placeholder. A real signal would be derived from sales and view data.
+      const demandFactor = Math.random();
       let adjustedPrice = product.currentPrice;
       if (demandFactor > 0.7) {
-        // Високий попит - підняти ціну на 5%
+        // High demand - raise the price by 5%
         adjustedPrice = product.currentPrice * 1.05;
       } else if (demandFactor < 0.3) {
-        // Низький попит - знизити ціну на 5%
+        // Low demand - lower the price by 5%
         adjustedPrice = product.currentPrice * 0.95;
       }
 

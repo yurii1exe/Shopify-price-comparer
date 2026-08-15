@@ -1,78 +1,111 @@
-# Project Description
+# Shopify Price Comparer
 
-**Project Name:** Dynamic Price Manager for Shopify  
-**Goal:** A Shopify app that automates dynamic pricing processes by utilizing competitor data from various APIs and internal pricing strategies.
+A dynamic pricing service for Shopify: pull competitor prices for each product,
+apply a pricing rule, and push the new price back to the store.
 
-This application aims to help Shopify store owners make data-driven pricing decisions, automate price updates, analyze new products, and propose optimal pricing adjustments based on demand and supply factors.
+> **Status: partial implementation. It does not compile.**
+> The domain model, the layered structure and the Shopify Admin API client are
+> written. The competitor-price adapter returns fixed values, the webhook handler
+> is an empty file, and the composition root is unwired — the pieces do not run
+> end to end. `tsc --noEmit` currently reports 14 errors, listed under
+> [what is not finished](#what-is-not-finished).
+>
+> The full intended design is in [`src/README.md`](src/README.md). That document
+> describes the design, not the state. This file describes what is actually in
+> the repository.
 
----
+## The problem
 
-## Core Functionality
+A store with a few thousand SKUs cannot price them by hand. Competitor prices
+move daily across several marketplaces, and each store owner wants a different
+rule — match the lowest, sit on the median, hold a margin above the average. The
+repricing logic and the marketplace APIs change on completely different
+schedules, so the interesting design question is how to keep them apart.
 
-1. **Shopify Integration:**
+## What I built
 
-   - Retrieve product lists from the Shopify store.
-   - Update product prices on Shopify.
-   - Handle webhooks (e.g., trigger analysis when a new product is added).
+**A layered structure that isolates every external dependency behind an
+interface.**
 
-2. **Competitive Pricing Analysis:**
+```
+domain/          Product entity, IProductRepository
+application/     PriceComparisonService, PriceUpdateService, DynamicPricingService
+infrastructure/  ShopifyApi, external-api adapters, MongoDB repository
+api/             REST controller + route
+```
 
-   - Choose from multiple external data sources:
-     - eBay API
-     - Amazon Product Advertising API
-     - Walmart API
-     - PriceSpider API
-     - Google Shopping API
-   - Collect competitor pricing data and create a price comparison dataset for each product.
+- **`IExternalApi`** is a one-method interface — `getCompetitorPrices(title):
+  Promise<number[]>`. Every marketplace is one implementation of it, and
+  `PriceComparisonService` takes an array of them, so adding a source is adding a
+  file. `EbayApiAdapter` is the only implementation present, and it returns a
+  fixed array rather than calling eBay.
+- **Pricing rules are a strategy**, selected per request from the POST body:
+  `average`, `min`, `max`, `median` over the collected competitor prices. The
+  maths lives in `shared/utils/mathUtils.ts` and is the only part of the system
+  with no dependencies at all.
+- **`ShopifyApi`** wraps the Shopify Admin REST API: versioned base URL,
+  `X-Shopify-Access-Token` authentication, `getAllProducts` at the 250-item page
+  ceiling, `searchProductsByTitle`, and `updateProductVariantPrice`. Errors are
+  caught and rethrown with the variant ID attached, because "Shopify returned
+  422" without a variant is not an actionable log line.
+- **The Mongoose schema** holds each product's current price, the competitor
+  prices last collected, the timestamp of the last change, and a `priceChanged`
+  flag — the intent being that an admin reviews only what moved rather than the
+  whole catalogue. The flag is written; no endpoint reads it back yet.
+- **Writes are upserts** keyed on the Shopify product ID, so a re-run reconciles
+  rather than duplicates.
 
-3. **Pricing Update Strategies:**
+**Two files in this repository are finished: `ShopifyApi.ts` and
+`mathUtils.ts`.** Nothing else here is at that standard, and the rest of this
+README should be read with that in mind. `ShopifyApi.ts` is the one I would point
+at — it is a correct, defensively written Admin REST client. The remaining files
+are a skeleton in various states of completion.
 
-   - Update Shopify prices based on:
-     - Average competitor price
-     - Lowest competitor price
-     - Highest competitor price
-     - Median competitor price
-   - Easily switch between these strategies via the app’s configuration.
+## What is not finished
 
-4. **New Product Analysis:**
+Stated plainly so nobody clones it expecting a working service.
 
-   - Automatically analyze newly added products to the Shopify store.
-   - Fetch competitor prices as soon as a new product is detected via Shopify webhooks.
-   - Apply initial pricing strategy or prepare data for manual review.
+**It does not compile.** `npx tsc --noEmit` reports 14 errors from these causes:
 
-5. **Dynamic Pricing Based on Demand and Supply:**
+- `index.ts` imports three modules that were never written —
+  `infrastructure/db/mongo`, `shared/config/config`, and
+  `interfaces/routes/PricingRoutes` (the routes are at `api/routes/`; there is no
+  `interfaces/` directory).
+- All three application services import
+  `domain/repositories/IProductRepository`. The directory is
+  `domain/iRepositories/`. `ProductRepository.ts` imports the correct path, so
+  both spellings coexist in the repo.
+- `PricingController.ts` calls `new ShopifyApi()` with no arguments; the
+  constructor requires `storeName` and `accessToken`.
+- `PriceUpdateService` and `DynamicPricingService` call
+  `shopifyApi.updateProductPrice(...)`, which `ShopifyApi` does not define — the
+  method is `updateProductVariantPrice`, and it takes a numeric variant ID where
+  a string `shopifyId` is being passed.
+- `ShopifyApi.ts` imports `axios`, which is not in `package.json`.
+- `tsconfig.json` does not set `esModuleInterop`, which the default `express` and
+  `body-parser` imports require.
+- `ShopifyProductMapper.toDomain` assigns `null` to a `Date` field and returns an
+  object literal typed as a Mongoose `Document`.
 
-   - Consider real-time factors (e.g., sales data, views, seasonal demand).
-   - Automatically suggest or apply price adjustments to maximize margins or meet sales targets.
+**Stubs, not implementations:**
 
-6. **Filtering Products with Updated Prices:**
-   - Mark products whose prices have changed.
-   - Provide a filtered view of such products for administrative review.
+- `EbayApiAdapter` returns `[100, 105, 99]`. No marketplace API is called
+  anywhere in this repository.
+- `infrastructure/shopify/Webhooks.ts` is a zero-byte file. The products/create
+  trigger is designed in `src/README.md` but not implemented.
+- `DynamicPricingService` derives its demand signal from `Math.random()` as a
+  placeholder. As written it would move real prices on a coin flip.
+- `PriceComparisonService` and `EbayApiAdapter` are never instantiated — the only
+  wired path is `POST /api/pricing/update`.
 
----
+**Also absent:** any tests, an OAuth flow (the Shopify client takes a token
+directly), a build or start script, and a `docker-compose` for the MongoDB
+dependency.
 
-## Use Cases
+## Stack
 
-1. **Admin Updates Prices Using the “Average” Strategy:**
+TypeScript · Node.js · Express · Mongoose / MongoDB · Shopify Admin REST API
 
-   - The admin logs into the app’s dashboard.
-   - Chooses the “Update Prices” feature.
-   - Selects “Average” as the strategy.
-   - The system retrieves competitor prices, calculates the average, updates the prices in Shopify, and presents a summary.
+## Licence
 
-2. **New Product Added in Shopify:**
-
-   - A new product is added via the Shopify admin panel.
-   - A Shopify webhook notifies the app.
-   - The app automatically gathers competitor prices, applies the chosen pricing rule, and updates the store’s price if necessary.
-
-3. **Admin Chooses Multiple Pricing Sources:**
-
-   - In the app settings, the admin selects eBay, Amazon, and Google Shopping as sources.
-   - Initiates a price update process.
-   - The system aggregates data from all three sources, calculates the chosen metric, updates prices accordingly, and logs the changes.
-
-4. **Admin Reviews Products with Changed Prices:**
-   - Opens a “Price Changes” tab in the dashboard.
-   - Sees a list of products with recently updated prices.
-   - Can filter by date, product name, or other criteria for further analysis.
+MIT — see [LICENSE](LICENSE).
