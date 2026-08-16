@@ -1,8 +1,8 @@
-import { IProduct } from '../entities/Product';
+import { Product } from '../entities/Product';
 
 export interface IProductRepository {
-  getAll(): Promise<IProduct[]>;
-  getByShopifyId(id: string): Promise<IProduct | null>;
-  createOrUpdate(product: IProduct): Promise<IProduct>;
+  getAll(): Promise<Product[]>;
+  getByShopifyId(id: string): Promise<Product | null>;
+  createOrUpdate(product: Product): Promise<Product>;
   markPriceChanged(id: string, changed: boolean): Promise<void>;
 }
