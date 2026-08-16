@@ -78,8 +78,9 @@ Two smaller decisions in the same service:
 `IExternalApi` is one method — `getCompetitorPrices(title): Promise<number[]>` — so a
 marketplace is one file, and `PriceComparisonService` takes an array of them. `EbayApiAdapter`
 implements it against the eBay Browse API, authenticating with the OAuth client-credentials
-grant and caching the application token until a minute before it expires, because eBay
-rate-limits the token endpoint far harder than the search endpoint.
+grant and caching the application token until a minute before it expires. eBay issues these
+for two hours and expects them to be reused; fetching one per product turns every search into
+two round trips against an endpoint that is not meant to carry that traffic.
 
 Two decisions there are what make the numbers comparable to a shop price:
 

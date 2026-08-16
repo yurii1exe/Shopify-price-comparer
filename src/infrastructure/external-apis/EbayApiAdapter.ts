@@ -101,8 +101,8 @@ export class EbayApiAdapter implements IExternalApi {
    * Application access token, via the client-credentials grant.
    *
    * Cached until 60 seconds before it expires. eBay issues these for two hours
-   * and rate-limits the token endpoint far harder than the search endpoint, so
-   * fetching one per product is the way to get throttled off the API.
+   * and expects them to be reused; fetching one per product would turn every
+   * search into two round trips against an endpoint not meant to carry that.
    */
   private async getAccessToken(): Promise<string> {
     const now = this.now();
