@@ -1,9 +1,14 @@
 {
   "name": "price-comparer",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "keywords": [
     "shopify",
@@ -16,17 +21,25 @@
   ],
   "author": "Yurii Shchehliuk",
   "license": "MIT",
-  "description": "Dynamic pricing service for Shopify: competitor price collection, pluggable pricing strategies, Shopify Admin API client. TypeScript, partial implementation.",
+  "description": "Dynamic pricing service for Shopify: syncs the catalogue, collects competitor prices from the eBay Browse API, applies a pricing rule and writes the result back through the Shopify Admin API.",
   "dependencies": {
-    "body-parser": "^1.20.3",
+    "axios": "^1.19.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "mongoose": "^8.9.0"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
+    "@types/express": "^4.17.25",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.10.2",
+    "@types/supertest": "^6.0.3",
+    "jest": "^29.7.0",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
