@@ -1,125 +1,129 @@
-## Technical Details
+# Layer rules
 
-### Architecture
+The top-level [README](../README.md) covers what the service does. This file is about how the
+source is arranged and which direction dependencies are allowed to point.
 
-- **Clean / Hexagonal Architecture:**  
-  The application is divided into layers:
+```
+domain/          entities/Product.ts, repositories/IProductRepository.ts
+application/     PriceComparisonService, PriceUpdateService, CatalogSyncService
+infrastructure/  db/, shopify/, external-apis/, repositories/
+api/             controllers/, routes/
+shared/          config/, utils/
+container.ts     composition root
+app.ts           Express wiring
+index.ts         entry point
+```
 
-  - **Domain (Entities, Repository Interfaces):** Defines core data structures (Products, Price History) and repository interfaces, independent of technology specifics.
-  - **Application (Use Cases/Services):** Contains business logic (price analysis, strategy selection, dynamic pricing).
-  - **Infrastructure (Repositories, Shopify Adapters, External API Adapters):** Actual implementations for MongoDB storage, integration with Shopify, and external competitor APIs.
-  - **Interfaces (UI/HTTP):** REST API endpoints, webhooks, and admin interfaces.
+**Dependencies point inward.** `domain` imports nothing outside itself. `application` imports
+`domain` and the two interfaces it collaborates through. `infrastructure` and `api` import
+everything they need. Nothing in `domain` or `application` imports Mongoose, Express or axios.
 
-- **API Layers:**
+That rule is what makes the services testable. `Product` is a plain interface, not a Mongoose
+`Document`, so a fake repository is a `Map` behind the interface —
+`tests/helpers/InMemoryProductRepository.ts` — and every application-layer test runs against
+it with no database process anywhere.
 
-  - **Shopify API:** Interact with Shopify products (get/update).
-  - **External Pricing APIs (eBay, Amazon, Walmart, PriceSpider, Google Shopping):**  
-    Each will have an adapter returning competitor price arrays.
+## The pieces
 
-- **Database (MongoDB):**  
-  Stores:
+### `domain`
 
-  - Product data (Shopify ID, current price, competitor prices, last update timestamp, priceChanged flag).
-  - Price change history (audit trail).
+- **`Product`** — `shopifyId` (string, because Shopify IDs exceed what a JS number holds
+  exactly), `variantId` (number: prices live on variants, and a repricer that only knows the
+  product ID has nothing it can PUT to), `title`, `currentPrice`, `competitorPrices`,
+  `lastPriceUpdate`, `priceChanged`.
+- **`IProductRepository`** — `getAll`, `getByShopifyId`, `createOrUpdate`, `markPriceChanged`,
+  all in terms of `Product`.
 
-- **Automation:**
-  - Cron jobs for regular price updates.
-  - Shopify webhooks to trigger analysis when new products are added.
+### `application`
 
-### Key Components
+- **`CatalogSyncService`** — pulls the catalogue from Shopify into the local collection. The
+  local copy is a projection, not a second source of truth: the store's price always wins, and
+  competitor prices already collected are carried across, so a sync between a comparison and
+  an update does not discard the prices the update was about to act on.
+- **`PriceComparisonService`** — collects from every configured `IExternalApi` and stores the
+  combined array, replacing the previous run rather than accumulating across runs. One source
+  failing is recorded, not thrown.
+- **`PriceUpdateService`** — applies one of `average`, `min`, `max`, `median`, enforces the
+  maximum-change limit, and writes Shopify first and the database second.
 
-1. **ShopifyApi (Infrastructure):**
+### `infrastructure`
 
-   - `getAllProducts()`, `updateProductVariantPrice()`, `listenToWebhooks()`.
+- **`db/`** — the Mongoose schema and `connectDB`. `toDomain` strips the document down to the
+  domain shape; nothing above this directory sees a `Document`. `bufferCommands` is off, so a
+  query issued before the connection is up fails with the connection error rather than a
+  timeout that names no host.
+- **`shopify/ShopifyApi.ts`** — the Admin REST client. Takes an optional axios instance so
+  tests inject one.
+- **`shopify/ShopifyProductMapper.ts`** — Shopify product to `Product`. Rejects a product with
+  no variants and a price that will not parse, rather than letting a `NaN` reach an average.
+- **`shopify/Webhooks.ts`** — `verifyShopifyWebhook` (raw bytes, constant-time comparison) and
+  the `products/create` handler.
+- **`external-apis/`** — `IExternalApi` and `EbayApiAdapter`.
+- **`repositories/ProductRepository.ts`** — `IProductRepository` over Mongoose, upserting on
+  `shopifyId`.
 
-2. **ExternalApi Adapters (Infrastructure):**
+### `api`
 
-   - `EbayApiAdapter`, `AmazonApiAdapter`, `WalmartApiAdapter`, `PriceSpiderApiAdapter`, `GoogleShoppingApiAdapter`.
-   - Common Method: `getCompetitorPrices(productTitle: string): Promise<number[]>`.
+`PricingController` is a class holding the services it uses; `createPricingRoutes` builds the
+router from them. Async handlers are wrapped so a rejected promise reaches the error
+middleware — Express 4 does not catch one on its own, and an unwrapped handler hangs the
+request until the client times out.
 
-3. **ProductRepository (Infrastructure):**
+### `container.ts`
 
-   - `getAll()`, `getByShopifyId(id)`, `createOrUpdate(product)`, `markPriceChanged(id, boolean)`.
+The composition root. `buildServices(config)` is the only place a real `ShopifyApi`,
+`ProductRepository` or `EbayApiAdapter` is constructed. Everything else takes its
+collaborators through a constructor, which is why the same services can be assembled over
+fakes in `tests/api.test.ts`.
 
-4. **Services (Application):**
+The eBay adapter is registered only when both halves of the credential are present. An
+unconfigured source is a source that is switched off, not an error: the service starts, and
+the endpoint that would need it says so.
 
-   - `PriceComparisonService`: Fetches products, gathers competitor prices, updates data in the database.
-   - `PriceUpdateService`: Calculates new prices using the chosen strategy and updates Shopify.
-   - `DynamicPricingService`: Applies demand/supply-based pricing adjustments.
+## Data flow
 
-5. **Use Cases (Application):**
+```
+POST /api/pricing/sync
+  PricingController.sync
+    CatalogSyncService.sync
+      ShopifyApi.getAllProducts        (follows the Link cursor)
+      ShopifyProductMapper.toDomain
+      IProductRepository.createOrUpdate
 
-   - `ComparePricesUseCase`: Invokes `PriceComparisonService`.
-   - `UpdatePricesUseCase`: Invokes `PriceUpdateService` with the selected strategy.
-   - `AnalyzeNewProductUseCase`: Triggered by new product webhook, runs `ComparePricesUseCase`.
+POST /api/pricing/compare
+  PricingController.compare
+    PriceComparisonService.compareAllProducts
+      IExternalApi.getCompetitorPrices  for each source, per product
+      IProductRepository.createOrUpdate
 
-6. **Controllers (Interfaces):**
+POST /api/pricing/update
+  PricingController.update
+    PriceUpdateService.updatePrices
+      mathUtils rule over competitorPrices
+      change-limit check
+      ShopifyApi.updateProductVariantPrice
+      IProductRepository.createOrUpdate + markPriceChanged
 
-   - `PricingController`: Endpoints to start price updates, configure strategies, and review changes.
-   - `ProductController`: Endpoints for viewing products, filtering by price changes.
+POST /webhooks/shopify   (X-Shopify-Topic: products/create)
+  verifyShopifyWebhook over the raw body
+  202 returned
+    ProductCreatedHandler.handle
+      ShopifyProductMapper.toDomain
+      PriceComparisonService.compareProduct
+```
 
-7. **Webhooks:**
-   - `Products/Create` Webhook: On receiving a new product event, runs `AnalyzeNewProductUseCase`.
+## Credentials
 
-### Data Flow
+The Shopify Admin API access token, the webhook shared secret and the eBay application
+credentials all come from the environment through `shared/config/config.ts`, which is the only
+module that reads `process.env`. `loadConfig` takes the environment as an argument so it can
+be tested without mutating the process. `.env` is gitignored; `.env.example` lists every
+variable.
 
-1. **Price Update Request (via UI or Cron):**
+## Tests
 
-   - `PricingController` → `UpdatePricesUseCase` → `PriceUpdateService`
-   - Fetch products from DB, gather competitor prices, compute new price → `ShopifyApi.updateProductVariantPrice()` → Update DB records, mark price changes.
-
-2. **New Product Handling (via Webhook):**
-   - Shopify → Webhook → `AnalyzeNewProductUseCase` → `PriceComparisonService`
-   - Collect competitor prices, determine initial strategy, possibly update Shopify and store product data in DB.
-
----
-
-## Security & Authorization
-
-- **Shopify App OAuth:**  
-  Use OAuth2 flow to obtain and refresh access tokens for Shopify Admin API.
-
-- **External API Credentials:**  
-  Each external API key or token stored in `.env` or a secure storage solution.
-
-- **HTTPS & Rate Limiting:**
-  All communications secured via HTTPS.
-  Rate limiting to prevent abuse and respect external APIs’ rate limits.
-
----
-
-## Logging & Monitoring
-
-- Log every price update operation.
-- Store price change histories in MongoDB.
-- Integrate with external logging/monitoring services (e.g., Datadog, LogDNA).
-- Track metrics: number of updates, response times, error rates.
-
----
-
-## Testing
-
-- **Unit Tests:**  
-  For use cases, services, and adapters.
-
-- **Integration Tests:**  
-  Validate interactions between repositories and external APIs.
-
-- **End-to-End Tests:**  
-  Full scenario: Add a product to Shopify → Webhook triggers → Price analysis and updates → Verification in Shopify.
-
----
-
-## Deployment
-
-- **Runtime:** Node.js + TypeScript
-- **Hosting:**  
-  Heroku, AWS (Lambda + API Gateway), Vercel, or DigitalOcean.
-- **CI/CD:**  
-  Automated pipeline for testing and deployment upon code commits.
-
----
-
-## Summary
-
-This documentation outlines the functional and technical details for building a Dynamic Price Manager integrated with Shopify. The described architecture and best practices will ensure the system is flexible, testable, and scalable. Further detailing and refinement will occur as the project progresses and specific needs arise.
+`tests/` mirrors the source. Ten suites: the pricing rules and money rounding, the Shopify
+client, the eBay adapter, the mapper, the webhook verification, the three application
+services, configuration loading, and the HTTP surface through `supertest`. No test opens a
+socket or a database connection — external collaborators are injected, which is the practical
+payoff of the layer rules above.

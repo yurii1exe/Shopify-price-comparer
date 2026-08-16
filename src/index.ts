@@ -1,16 +1,48 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import { connectDB } from './infrastructure/db/mongo';
-import pricingRoutes from './interfaces/routes/PricingRoutes';
-import { config } from './shared/config/config';
+import { createApp } from './app';
+import { buildServices } from './container';
+import { connectDB, disconnectDB } from './infrastructure/db/mongo';
+import { ConfigError, loadConfig, loadDotEnv } from './shared/config/config';
 
-const app = express();
+async function main(): Promise<void> {
+  loadDotEnv();
 
-app.use(bodyParser.json());
-app.use('/api/pricing', pricingRoutes);
+  let config;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      console.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
 
-connectDB();
+  await connectDB(config.mongoUri);
+  console.log('Connected to MongoDB');
 
-app.listen(config.port, () => {
-  console.log(`Server running on port ${config.port}`);
+  const services = buildServices(config);
+  const app = createApp(services, config);
+
+  const server = app.listen(config.port, () => {
+    console.log(`Server running on port ${config.port}`);
+    console.log(
+      `Competitor sources: ${services.sources.length > 0 ? services.sources.map((s) => s.name).join(', ') : 'none configured'}`
+    );
+    console.log(`Shopify webhooks: ${config.shopify.webhookSecret ? 'enabled' : 'disabled (no SHOPIFY_WEBHOOK_SECRET)'}`);
+  });
+
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`${signal} received, shutting down`);
+    server.close();
+    await disconnectDB();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+main().catch((error) => {
+  console.error('Failed to start:', error);
+  process.exit(1);
 });

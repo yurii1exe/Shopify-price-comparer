@@ -1,29 +1,40 @@
-import { IProduct } from '../../domain/entities/Product';
-
-interface ShopifyProduct {
-  id: number;
-  title: string;
-  variants: { id: number; title: string; price: string }[];
-}
+import { Product } from '../../domain/entities/Product';
+import { ShopifyProduct } from './ShopifyApi';
 
 export class ShopifyProductMapper {
-  static toDomain(shopifyProduct: ShopifyProduct): IProduct {
-    // Take the first variant as the primary one (simplified example)
-    const mainVariant = shopifyProduct.variants[0];
-    const currentPrice = parseFloat(mainVariant.price);
+  /**
+   * Map a Shopify product onto the domain shape.
+   *
+   * The first variant is taken as the one being repriced. A product with no
+   * variants has no price to write, and a product whose price will not parse
+   * would otherwise become a `NaN` that propagates into every average — both
+   * are rejected here rather than downstream.
+   */
+  static toDomain(shopifyProduct: ShopifyProduct): Product {
+    const mainVariant = shopifyProduct.variants?.[0];
+    if (!mainVariant) {
+      throw new Error(`Shopify product ${shopifyProduct.id} has no variants; nothing to price`);
+    }
+
+    const currentPrice = Number.parseFloat(mainVariant.price);
+    if (!Number.isFinite(currentPrice)) {
+      throw new Error(
+        `Shopify product ${shopifyProduct.id} variant ${mainVariant.id} has unparseable price "${mainVariant.price}"`
+      );
+    }
 
     return {
-      shopifyId: shopifyProduct.id.toString(),
+      shopifyId: String(shopifyProduct.id),
+      variantId: mainVariant.id,
       title: shopifyProduct.title,
-      currentPrice: currentPrice,
+      currentPrice,
       competitorPrices: [],
       lastPriceUpdate: null,
       priceChanged: false,
-      _id: undefined as any, // With Mongoose, _id is assigned on save
     };
   }
 
-  static toDomainMultiple(shopifyProducts: ShopifyProduct[]): IProduct[] {
+  static toDomainMultiple(shopifyProducts: ShopifyProduct[]): Product[] {
     return shopifyProducts.map((p) => this.toDomain(p));
   }
 }
