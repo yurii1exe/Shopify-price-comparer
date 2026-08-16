@@ -11,6 +11,17 @@ average. The repricing rule and the marketplace APIs change on completely differ
 so the whole service is arranged around keeping them apart: a marketplace is one file behind a
 one-method interface, and a pricing rule is one function over an array of numbers.
 
+![A terminal session: a dry run, webhook HMAC verification, and a failed Shopify write that leaves the stored price alone](docs/demo.gif)
+
+The recording is the compiled service on `node dist/index.js` against a local stack — MongoDB in
+Docker, a placeholder Shopify token, no eBay credentials. In order: `/health`; the seeded
+catalogue in Mongo; a `median` dry run, where the change limit skips a competitor match 46% below
+the shop price; a webhook rejected on a wrong HMAC and accepted on one computed with `openssl`,
+and the product it stored; `/api/pricing/compare` answering `503` with the variables to set; and
+a real update whose Shopify write answers `404` — the failure is reported with the variant ID,
+and the stored price does not move. The eBay Browse API is not called, and no price reaches a
+live store.
+
 ## The loop
 
 ```
