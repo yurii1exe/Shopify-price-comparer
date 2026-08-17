@@ -1,4 +1,4 @@
-import { average, max, median, min, roundToCents } from '../src/shared/utils/mathUtils';
+import { average, max, median, min, roundToCents, trimOutliers } from '../src/shared/utils/mathUtils';
 
 describe('pricing rules', () => {
   const prices = [12.5, 9.99, 20, 15.25];
@@ -60,5 +60,39 @@ describe('roundToCents', () => {
     expect(roundToCents(-3.456)).toBe(-3.46);
     expect(roundToCents(Number.POSITIVE_INFINITY)).toBe(0);
     expect(roundToCents(Number.NaN)).toBe(0);
+  });
+});
+
+describe('trimOutliers', () => {
+  it('drops a price far below the rest — the accessory listing that is not the product', () => {
+    expect(trimOutliers([88.5, 92, 95.75, 90.25, 9.99]).sort((a, b) => a - b)).toEqual([88.5, 90.25, 92, 95.75]);
+  });
+
+  it('drops a price far above the rest', () => {
+    expect(trimOutliers([49, 51, 52, 50, 400])).toEqual([49, 51, 52, 50]);
+  });
+
+  it('keeps an ordinary spread intact', () => {
+    expect(trimOutliers([49, 51, 55, 60, 62])).toEqual([49, 51, 55, 60, 62]);
+  });
+
+  it('leaves the order of the prices it keeps alone', () => {
+    expect(trimOutliers([95.75, 9.99, 88.5, 92, 90.25])).toEqual([95.75, 88.5, 92, 90.25]);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [95.75, 9.99, 88.5, 92];
+    trimOutliers(input);
+    expect(input).toEqual([95.75, 9.99, 88.5, 92]);
+  });
+
+  it('leaves a sample of fewer than four alone: three prices cannot tell a spread from an outlier', () => {
+    expect(trimOutliers([10, 12, 90])).toEqual([10, 12, 90]);
+    expect(trimOutliers([10])).toEqual([10]);
+    expect(trimOutliers([])).toEqual([]);
+  });
+
+  it('leaves a sample whose quartiles coincide alone, rather than discarding everything but one value', () => {
+    expect(trimOutliers([20, 20, 20, 20, 25])).toEqual([20, 20, 20, 20, 25]);
   });
 });

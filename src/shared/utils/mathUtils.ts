@@ -43,3 +43,46 @@ export function roundToCents(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
+
+/**
+ * The value below which `p` of the sorted sample sits, interpolating between
+ * the two neighbouring points when the position falls between them.
+ */
+function quantile(sorted: number[], p: number): number {
+  const position = (sorted.length - 1) * p;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+/**
+ * Drop competitor prices further than 1.5 interquartile ranges outside the
+ * quartiles — the standard box-plot fence.
+ *
+ * A marketplace search returns the occasional listing that is not the product:
+ * a spare part at a tenth of the price, a two-year service plan at three
+ * times. One of those is enough to drag an average, and it *defines* the
+ * minimum. Trimming happens before the rule runs so every rule sees the same
+ * sample.
+ *
+ * Fewer than four prices has no meaningful quartiles, so the sample is
+ * returned untouched: with three listings there is nothing to distinguish an
+ * outlier from a spread. A sample whose quartiles coincide is returned
+ * untouched too, because the fence would then be a single point and would
+ * discard every price that is not exactly it.
+ */
+export function trimOutliers(values: number[]): number[] {
+  if (values.length < 4) return [...values];
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1 = quantile(sorted, 0.25);
+  const q3 = quantile(sorted, 0.75);
+  const iqr = q3 - q1;
+  if (iqr === 0) return [...values];
+
+  const low = q1 - 1.5 * iqr;
+  const high = q3 + 1.5 * iqr;
+  const kept = values.filter((value) => value >= low && value <= high);
+  return kept.length > 0 ? kept : [...values];
+}

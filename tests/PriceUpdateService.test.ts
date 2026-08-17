@@ -114,7 +114,7 @@ describe('PriceUpdateService', () => {
   describe('dry run', () => {
     it('reports the changes without calling Shopify or touching the database', async () => {
       const repo = new InMemoryProductRepository([
-        makeProduct({ currentPrice: 100, competitorPrices: [90] }),
+        makeProduct({ currentPrice: 100, competitorPrices: [90, 92, 94] }),
       ]);
       const { api, update } = fakeShopify();
       const result = await new PriceUpdateService(repo, api, { maxChangePercent: 50 }).updatePrices('min', {
@@ -131,8 +131,8 @@ describe('PriceUpdateService', () => {
   describe('when Shopify rejects a write', () => {
     it('records the failure, leaves the stored price alone and carries on with the rest', async () => {
       const repo = new InMemoryProductRepository([
-        makeProduct({ shopifyId: '1', variantId: 11, currentPrice: 100, competitorPrices: [90] }),
-        makeProduct({ shopifyId: '2', variantId: 22, currentPrice: 100, competitorPrices: [95] }),
+        makeProduct({ shopifyId: '1', variantId: 11, currentPrice: 100, competitorPrices: [90, 92, 94] }),
+        makeProduct({ shopifyId: '2', variantId: 22, currentPrice: 100, competitorPrices: [95, 97, 99] }),
       ]);
       const update = jest
         .fn()
@@ -152,7 +152,7 @@ describe('PriceUpdateService', () => {
 
   it('marks a changed product for review', async () => {
     const repo = new InMemoryProductRepository([
-      makeProduct({ currentPrice: 100, competitorPrices: [90] }),
+      makeProduct({ currentPrice: 100, competitorPrices: [90, 92, 94] }),
     ]);
     const { api } = fakeShopify();
     await new PriceUpdateService(repo, api, { maxChangePercent: 50 }).updatePrices('min');
@@ -160,5 +160,80 @@ describe('PriceUpdateService', () => {
     const stored = (await repo.getByShopifyId('1001'))!;
     expect(stored.priceChanged).toBe(true);
     expect(stored.lastPriceUpdate).toBeInstanceOf(Date);
+  });
+  describe('outlier trimming', () => {
+    // One listing that is not the product, among four that are.
+    const sample = [88.5, 92, 95.75, 90.25, 9.99];
+
+    it('drops the junk match before the average is taken', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: sample }),
+      ]);
+      const { api, update } = fakeShopify();
+      await new PriceUpdateService(repo, api, { maxChangePercent: 20 }).updatePrices('average');
+
+      // The mean of the four real prices. Untrimmed it would be 75.30, a 25%
+      // cut that the change limit would then have had to catch.
+      expect(update).toHaveBeenCalledWith(5001, '91.63');
+    });
+
+    it('drops it before the minimum is taken, which is the rule it would otherwise define', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: sample }),
+      ]);
+      const { api, update } = fakeShopify();
+      await new PriceUpdateService(repo, api, { maxChangePercent: 20 }).updatePrices('min');
+
+      expect(update).toHaveBeenCalledWith(5001, '88.50');
+    });
+  });
+
+  describe('the guard on min', () => {
+    it('refuses a lowest price the rest of the sample does not support', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: [95, 97, 40] }),
+      ]);
+      const { api, update } = fakeShopify();
+      const result = await new PriceUpdateService(repo, api, { maxChangePercent: 80 }).updatePrices('min');
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.skipped[0]).toEqual({
+        shopifyId: '1001',
+        title: 'Widget',
+        reason: 'min-not-corroborated',
+        proposed: 40,
+      });
+    });
+
+    it('refuses a sample too small to have a distribution at all', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: [90, 92] }),
+      ]);
+      const { api, update } = fakeShopify();
+      const result = await new PriceUpdateService(repo, api, { maxChangePercent: 50 }).updatePrices('min');
+
+      expect(update).not.toHaveBeenCalled();
+      expect(result.skipped[0].reason).toBe('min-not-corroborated');
+    });
+
+    it('accepts a lowest price the sample does support', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: [90, 95, 100] }),
+      ]);
+      const { api, update } = fakeShopify();
+      await new PriceUpdateService(repo, api, { maxChangePercent: 50 }).updatePrices('min');
+
+      expect(update).toHaveBeenCalledWith(5001, '90.00');
+    });
+
+    it('leaves the other rules to run over the same sample: median survives one junk match', async () => {
+      const repo = new InMemoryProductRepository([
+        makeProduct({ currentPrice: 100, competitorPrices: [95, 97, 40] }),
+      ]);
+      const { api, update } = fakeShopify();
+      await new PriceUpdateService(repo, api, { maxChangePercent: 50 }).updatePrices('median');
+
+      expect(update).toHaveBeenCalledWith(5001, '95.00');
+    });
   });
 });

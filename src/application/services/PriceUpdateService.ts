@@ -1,6 +1,6 @@
 import { IProductRepository } from '../../domain/repositories/IProductRepository';
 import { ShopifyApi } from '../../infrastructure/shopify/ShopifyApi';
-import { average, median, min, max, roundToCents } from '../../shared/utils/mathUtils';
+import { average, median, min, max, roundToCents, trimOutliers } from '../../shared/utils/mathUtils';
 
 export const PRICING_STRATEGIES = ['average', 'min', 'max', 'median'] as const;
 export type PricingStrategy = (typeof PRICING_STRATEGIES)[number];
@@ -38,7 +38,12 @@ export interface PriceChange {
 export interface SkippedProduct {
   shopifyId: string;
   title: string;
-  reason: 'no-competitor-prices' | 'unchanged' | 'exceeds-max-change' | 'invalid-price';
+  reason:
+    | 'no-competitor-prices'
+    | 'unchanged'
+    | 'exceeds-max-change'
+    | 'invalid-price'
+    | 'min-not-corroborated';
   proposed?: number;
 }
 
@@ -78,7 +83,21 @@ export class PriceUpdateService {
         continue;
       }
 
-      const newPrice = roundToCents(RULES[strategy](product.competitorPrices));
+      // One listing that is not the product is enough to move an average and
+      // enough to define a minimum, so the obvious outliers go before the rule.
+      const prices = trimOutliers(product.competitorPrices);
+
+      if (strategy === 'min' && !isCorroborated(prices)) {
+        result.skipped.push({
+          shopifyId: product.shopifyId,
+          title: product.title,
+          reason: 'min-not-corroborated',
+          proposed: roundToCents(min(prices)),
+        });
+        continue;
+      }
+
+      const newPrice = roundToCents(RULES[strategy](prices));
 
       if (!Number.isFinite(newPrice) || newPrice <= 0) {
         result.skipped.push({
@@ -139,6 +158,36 @@ export class PriceUpdateService {
 
     return result;
   }
+}
+
+/**
+ * The smallest sample `min` is allowed to run over. Below this the lowest
+ * price is not a market floor, it is one listing.
+ */
+export const MIN_STRATEGY_SAMPLE_SIZE = 3;
+
+/**
+ * How far below the sample's median the lowest price may sit and still be
+ * treated as a real price rather than a bad match.
+ */
+export const MIN_STRATEGY_MEDIAN_RATIO = 0.6;
+
+/**
+ * `min` is the most dangerous rule and the least defended one. Every other
+ * rule survives one junk match — the median ignores it, the average is dragged
+ * a little — but `min` is *defined* by the worst match in the sample, so the
+ * one listing the filters failed to catch becomes the shop price.
+ *
+ * So the lowest price has to be corroborated: enough listings to have a
+ * distribution, and a minimum that sits within reach of that distribution's
+ * middle. A product that fails this is skipped and reported with the price it
+ * would have set, the same way an over-large move is.
+ */
+function isCorroborated(prices: number[]): boolean {
+  if (prices.length < MIN_STRATEGY_SAMPLE_SIZE) return false;
+  const middle = median(prices);
+  if (middle <= 0) return false;
+  return min(prices) >= middle * MIN_STRATEGY_MEDIAN_RATIO;
 }
 
 function exceedsLimit(currentPrice: number, newPrice: number, maxChangePercent: number): boolean {
