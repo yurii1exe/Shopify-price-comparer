@@ -11,16 +11,19 @@ average. The repricing rule and the marketplace APIs change on completely differ
 so the whole service is arranged around keeping them apart: a marketplace is one file behind a
 one-method interface, and a pricing rule is one function over an array of numbers.
 
-![A terminal session: a dry run, webhook HMAC verification, and a failed Shopify write that leaves the stored price alone](docs/demo.gif)
+![A terminal session: the seeded catalogue, the shared secret on the pricing routes, a failed Shopify write, and a dry run whose change limit refuses to cut 169 to 92](docs/demo.gif)
 
-The recording is the compiled service on `node dist/index.js` against a local stack — MongoDB in
-Docker, a placeholder Shopify token, no eBay credentials. In order: `/health`; the seeded
-catalogue in Mongo; a `median` dry run, where the change limit skips a competitor match 46% below
-the shop price; a webhook rejected on a wrong HMAC and accepted on one computed with `openssl`,
-and the product it stored; `/api/pricing/compare` answering `503` with the variables to set; and
-a real update whose Shopify write answers `404` — the failure is reported with the variant ID,
-and the stored price does not move. The eBay Browse API is not called, and no price reaches a
-live store.
+The recording is the compiled service on `node dist/index.js` against a local stack — MongoDB
+in Docker, a placeholder Shopify token, no eBay credentials. In order: `/health`, reporting
+which sources are configured and that the pricing routes want a key; the seeded catalogue in
+Mongo, with the competitor prices already collected; `/api/pricing/compare` refused without
+the shared secret, refused with the wrong one, and answering `503` with the variables to set
+once it has the right one; a webhook rejected on a wrong HMAC and accepted on one computed
+with `openssl`, and the product it stored; a real update whose Shopify writes answer `404`,
+each reported with its variant ID, after which the stored prices and their `lastPriceUpdate`
+are exactly where they were; and a `median` dry run, where the change limit refuses to cut the
+grinder from 169 to 92 and reports the price it would have set. The eBay Browse API is not
+called, and no price reaches a live store.
 
 ## The loop
 
@@ -49,7 +52,7 @@ price is further than `MAX_PRICE_CHANGE_PERCENT` from its current price is skipp
 reported with the price it would have set, rather than being written and discovered later:
 
 ```console
-$ curl -s -XPOST localhost:3000/api/pricing/update \
+$ curl -s -XPOST localhost:3000/api/pricing/update -H "X-Api-Key: $PRICING_API_KEY" \
     -H 'Content-Type: application/json' -d '{"strategy":"median","dryRun":true}'
 {
   "strategy": "median",
@@ -73,6 +76,19 @@ $ curl -s -XPOST localhost:3000/api/pricing/update \
 request that would reprice the catalogue can first be used to read what it is about to do.
 `maxChangePercent` can be sent per request to widen or tighten the brake for one run.
 
+Before any rule runs, the sample it runs over is trimmed: competitor prices further than 1.5
+interquartile ranges outside the quartiles are dropped. A marketplace search returns the
+occasional listing that is not the product, and one of those is enough to drag an average.
+A sample of fewer than four prices is left alone, because with three listings there is nothing
+to distinguish an outlier from a spread.
+
+`min` then gets a guard the other rules do not need. Every other rule survives one bad match —
+the median ignores it, the average is dragged a little — but `min` is *defined* by the worst
+match in the sample, so the single listing the filters did not catch becomes the shop price.
+So the lowest price has to be corroborated: at least three prices, and a minimum no further
+than 40% below the sample's median. A product that fails that is skipped as
+`min-not-corroborated` and reported with the price it would have set.
+
 Two smaller decisions in the same service:
 
 - **Shopify is written before the database.** If the local copy were written first and the
@@ -93,21 +109,50 @@ grant and caching the application token until a minute before it expires. eBay i
 for two hours and expects them to be reused; fetching one per product turns every search into
 two round trips against an endpoint that is not meant to carry that traffic.
 
-Two decisions there are what make the numbers comparable to a shop price:
+A keyword search answers "what is relevant to these words". A repricer needs "what is this
+same item selling for", and the gap between those two questions is where a repricer gets a
+price wrong. Four rules close it, and every one of them keeps the returned array homogeneous —
+one array of landed prices for one new unit of one item:
 
-- **Fixed-price listings only** (`buyingOptions:{FIXED_PRICE}`). An auction's current bid is
-  what somebody has offered so far, not what the item sold for, and averaging it in drags
-  every rule downward.
+- **Fixed-price, new listings only** (`buyingOptions:{FIXED_PRICE}`, `conditions:{NEW}`). An
+  auction's current bid is what somebody has offered so far, not what the item sells for. A
+  used, refurbished or for-parts unit is a different product at a different price, and under
+  the `min` rule it is exactly the one that gets selected.
+- **The listing title has to match the product's.** A listing has to carry at least 60% of the
+  product's title tokens, normalised and stripped of the words that carry no identity. Beyond
+  that it is dropped if it is a multipack or a lot — "set of 6" enters a keyword search as
+  readily as anything else, and its price is six unit prices — if it is salvage, or if it
+  names an accessory the product does not name, which is how a dust cover for a grinder gets
+  into the sample at a tenth of the price. `infrastructure/external-apis/titleMatch.ts` holds
+  those checks as pure functions and is tested on its own.
 - **Landed cost, not item cost.** A buyer compares the total, so the reported shipping cost is
-  added to each listing. Free-shipping listings report `0.00` and are unaffected.
+  added. A listing that reports no shipping cost at all is dropped rather than counted as
+  free: its item price is not a landed price, and one array holding both leaves the rule
+  averaging two different quantities. Free shipping is reported as `0.00`, which is a reported
+  cost, and is kept.
+- **One currency.** Listings quoted in another are dropped rather than converted — guessing an
+  FX rate would put a wrong number into a price.
 
-Listings quoted in another currency are dropped rather than converted — guessing an FX rate
-would put a wrong number into a price.
+What the matching does not do: it reads titles, not item specifics, so it cannot tell a 250 g
+bag from a 1 kg one when the titles otherwise agree; it has no synonym list and no notion that
+a model number is a model number; and a listing whose title contains the whole of the
+product's passes the token check whatever else it says. That is why the outlier trim sits in
+front of the pricing rule and the change limit sits in front of the write.
 
 A source that fails does not abandon the run. The failure is recorded against the source and
 the product, and the remaining sources still contribute; a thrown error halfway through the
 catalogue would otherwise leave half the products holding prices from this run and half from
 the last, with nothing recording which is which.
+
+## Reaching it
+
+`/api/pricing/sync`, `/api/pricing/compare` and `/api/pricing/update` require the shared secret
+in `PRICING_API_KEY`, sent as an `X-Api-Key` header and compared in constant time. Repricing a
+catalogue and spending somebody's eBay quota are not public operations. With no key configured
+those routes answer `503` naming the variable to set, rather than running unauthenticated.
+
+`POST /webhooks/shopify` is the one route designed to be reachable from outside, and it
+authenticates its callers itself — by HMAC over the raw body, which is what Shopify signs.
 
 ## Webhooks
 
@@ -170,7 +215,8 @@ npm run build
 npm start                     # http://localhost:3000
 ```
 
-`npm run dev` runs it from TypeScript through `ts-node` without building. If 27017 is already
+`PRICING_API_KEY` is what the pricing routes check, and `openssl rand -hex 32` is a fine way
+to produce one. `npm run dev` runs it from TypeScript through `ts-node` without building. If 27017 is already
 taken on the host, `MONGO_PORT=27018 docker compose up -d` moves it — `MONGODB_URI` has to
 agree.
 
@@ -189,19 +235,19 @@ $ echo $?
 ```
 
 `GET /health` reports which competitor sources are configured and whether webhooks are
-mounted. eBay credentials are optional: without them the source is not registered and
+mounted, and needs no key. eBay credentials are optional: without them the source is not registered and
 `/api/pricing/compare` answers `503` naming the variables to set, rather than reporting an
 empty comparison as a success.
 
 ```bash
-npm test                      # 91 tests
+npm test                      # 155 tests
 npm run typecheck
 ```
 
-The suite covers the four pricing rules and the money rounding, the Shopify client's
-pagination and error handling against a stubbed HTTP client, the eBay adapter's token caching
-and currency filtering, the HMAC verification, the mapper, and every endpoint through
-`supertest`. None of it reaches the network or a database — the repository has an in-memory
+The suite covers the four pricing rules, the outlier trim and the money rounding, the Shopify
+client's pagination and error handling against a stubbed HTTP client, the eBay adapter's token
+caching, listing filters and title matching, the HMAC verification, the shared secret on the
+pricing routes, the mapper, and every endpoint through `supertest`. None of it reaches the network or a database — the repository has an in-memory
 implementation, so the services are exercised with no Mongo running.
 
 ## Layout
@@ -232,6 +278,7 @@ More on the layer rules in [`src/README.md`](src/README.md).
 | `SHOPIFY_WEBHOOK_SECRET` | enables `/webhooks/shopify` |
 | `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` | enables the eBay source |
 | `EBAY_MARKETPLACE_ID`, `EBAY_CURRENCY` | default `EBAY_US`, `USD` |
+| `PRICING_API_KEY` | shared secret for `/api/pricing/*`, sent as `X-Api-Key` |
 | `MAX_PRICE_CHANGE_PERCENT` | largest single move, default `20` |
 | `PORT` | default `3000` |
 

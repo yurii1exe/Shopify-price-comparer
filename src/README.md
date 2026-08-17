@@ -7,7 +7,7 @@ source is arranged and which direction dependencies are allowed to point.
 domain/          entities/Product.ts, repositories/IProductRepository.ts
 application/     PriceComparisonService, PriceUpdateService, CatalogSyncService
 infrastructure/  db/, shopify/, external-apis/, repositories/
-api/             controllers/, routes/
+api/             controllers/, routes/, middleware/
 shared/          config/, utils/
 container.ts     composition root
 app.ts           Express wiring
@@ -43,8 +43,10 @@ it with no database process anywhere.
 - **`PriceComparisonService`** — collects from every configured `IExternalApi` and stores the
   combined array, replacing the previous run rather than accumulating across runs. One source
   failing is recorded, not thrown.
-- **`PriceUpdateService`** — applies one of `average`, `min`, `max`, `median`, enforces the
-  maximum-change limit, and writes Shopify first and the database second.
+- **`PriceUpdateService`** — trims the outliers out of the collected prices, applies one of
+  `average`, `min`, `max`, `median`, enforces the maximum-change limit, and writes Shopify
+  first and the database second. `min` carries an extra condition: the lowest price has to be
+  corroborated by the sample around it, because that rule is defined by the worst match in it.
 
 ### `infrastructure`
 
@@ -58,16 +60,22 @@ it with no database process anywhere.
   no variants and a price that will not parse, rather than letting a `NaN` reach an average.
 - **`shopify/Webhooks.ts`** — `verifyShopifyWebhook` (raw bytes, constant-time comparison) and
   the `products/create` handler.
-- **`external-apis/`** — `IExternalApi` and `EbayApiAdapter`.
+- **`external-apis/`** — `IExternalApi`, `EbayApiAdapter`, and `titleMatch.ts`: the pure
+  functions that decide whether a returned listing is the same item as the product —
+  tokenising, multipack, salvage and accessory checks, and title coverage.
 - **`repositories/ProductRepository.ts`** — `IProductRepository` over Mongoose, upserting on
   `shopifyId`.
 
 ### `api`
 
 `PricingController` is a class holding the services it uses; `createPricingRoutes` builds the
-router from them. Async handlers are wrapped so a rejected promise reaches the error
-middleware — Express 4 does not catch one on its own, and an unwrapped handler hangs the
-request until the client times out.
+router from them, and `middleware/requireApiKey.ts` sits in front of the whole `/api/pricing`
+mount, comparing the `X-Api-Key` header with `PRICING_API_KEY` in constant time. The webhook
+router is the only one reachable without that key, and it verifies its own callers.
+
+Async handlers are wrapped so a rejected promise reaches the error middleware — Express 4 does
+not catch one on its own, and an unwrapped handler hangs the request until the client times
+out.
 
 ### `container.ts`
 
@@ -97,9 +105,11 @@ POST /api/pricing/compare
       IProductRepository.createOrUpdate
 
 POST /api/pricing/update
+  requireApiKey                      (X-Api-Key, constant-time)
   PricingController.update
     PriceUpdateService.updatePrices
-      mathUtils rule over competitorPrices
+      trimOutliers over competitorPrices
+      mathUtils rule over what survives
       change-limit check
       ShopifyApi.updateProductVariantPrice
       IProductRepository.createOrUpdate + markPriceChanged
@@ -114,16 +124,17 @@ POST /webhooks/shopify   (X-Shopify-Topic: products/create)
 
 ## Credentials
 
-The Shopify Admin API access token, the webhook shared secret and the eBay application
-credentials all come from the environment through `shared/config/config.ts`, which is the only
-module that reads `process.env`. `loadConfig` takes the environment as an argument so it can
-be tested without mutating the process. `.env` is gitignored; `.env.example` lists every
-variable.
+The Shopify Admin API access token, the webhook shared secret, the pricing routes' shared
+secret and the eBay application credentials all come from the environment through
+`shared/config/config.ts`, which is the only module that reads `process.env`. `loadConfig`
+takes the environment as an argument so it can be tested without mutating the process. `.env`
+is gitignored; `.env.example` lists every variable.
 
 ## Tests
 
-`tests/` mirrors the source. Ten suites: the pricing rules and money rounding, the Shopify
-client, the eBay adapter, the mapper, the webhook verification, the three application
-services, configuration loading, and the HTTP surface through `supertest`. No test opens a
-socket or a database connection — external collaborators are injected, which is the practical
-payoff of the layer rules above.
+`tests/` mirrors the source. Eleven suites: the pricing rules, the outlier trim and money
+rounding, the Shopify client, the eBay adapter, the listing-title matching, the mapper, the
+webhook verification, the three application services, configuration loading, and the HTTP
+surface — including the shared secret on the pricing routes — through `supertest`. No test
+opens a socket or a database connection — external collaborators are injected, which is the
+practical payoff of the layer rules above.
