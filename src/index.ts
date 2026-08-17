@@ -29,6 +29,9 @@ async function main(): Promise<void> {
       `Competitor sources: ${services.sources.length > 0 ? services.sources.map((s) => s.name).join(', ') : 'none configured'}`
     );
     console.log(`Shopify webhooks: ${config.shopify.webhookSecret ? 'enabled' : 'disabled (no SHOPIFY_WEBHOOK_SECRET)'}`);
+    console.log(
+      `Pricing routes: ${config.pricing.apiKey ? 'X-Api-Key required' : 'not configured (set PRICING_API_KEY)'}`
+    );
   });
 
   const shutdown = async (signal: string): Promise<void> => {

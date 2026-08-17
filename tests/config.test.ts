@@ -17,7 +17,12 @@ describe('loadConfig', () => {
       webhookSecret: null,
     });
     expect(config.port).toBe(3000);
-    expect(config.pricing.maxChangePercent).toBe(20);
+    expect(config.pricing).toEqual({ maxChangePercent: 20, apiKey: null });
+  });
+
+  it('leaves the pricing key unset when the variable is absent, and the routes then answer 503', () => {
+    expect(loadConfig(minimal).pricing.apiKey).toBeNull();
+    expect(loadConfig({ ...minimal, PRICING_API_KEY: '   ' }).pricing.apiKey).toBeNull();
   });
 
   it('names every missing variable in one error rather than one per restart', () => {
@@ -58,6 +63,7 @@ describe('loadConfig', () => {
       SHOPIFY_API_VERSION: '2025-01',
       SHOPIFY_WEBHOOK_SECRET: 'shpss_secret',
       MAX_PRICE_CHANGE_PERCENT: '5',
+      PRICING_API_KEY: 'a-shared-secret',
       EBAY_CLIENT_ID: 'id',
       EBAY_CLIENT_SECRET: 'secret',
       EBAY_MARKETPLACE_ID: 'EBAY_GB',
@@ -68,6 +74,7 @@ describe('loadConfig', () => {
     expect(config.shopify.apiVersion).toBe('2025-01');
     expect(config.shopify.webhookSecret).toBe('shpss_secret');
     expect(config.pricing.maxChangePercent).toBe(5);
+    expect(config.pricing.apiKey).toBe('a-shared-secret');
     expect(config.ebay).toMatchObject({ marketplaceId: 'EBAY_GB', currency: 'GBP' });
   });
 });

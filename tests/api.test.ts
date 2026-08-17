@@ -12,8 +12,9 @@ import { AppConfig } from '../src/shared/config/config';
 import { InMemoryProductRepository, makeProduct } from './helpers/InMemoryProductRepository';
 
 const WEBHOOK_SECRET = 'shpss_test_secret';
+const API_KEY = 'test-pricing-key';
 
-function config(overrides: Partial<AppConfig['shopify']> = {}): AppConfig {
+function config(overrides: Partial<AppConfig['shopify']> = {}, apiKey: string | null = API_KEY): AppConfig {
   return {
     port: 0,
     mongoUri: 'mongodb://unused',
@@ -25,7 +26,7 @@ function config(overrides: Partial<AppConfig['shopify']> = {}): AppConfig {
       ...overrides,
     },
     ebay: null,
-    pricing: { maxChangePercent: 20 },
+    pricing: { maxChangePercent: 20, apiKey },
   };
 }
 
@@ -91,7 +92,7 @@ describe('GET /health', () => {
 describe('POST /api/pricing/update', () => {
   it('rejects an unknown strategy with the list of valid ones', async () => {
     const h = harness();
-    const response = await request(app(h)).post('/api/pricing/update').send({ strategy: 'cheapest' });
+    const response = await request(app(h)).post('/api/pricing/update').set('X-Api-Key', API_KEY).send({ strategy: 'cheapest' });
 
     expect(response.status).toBe(400);
     expect(response.body.expected).toEqual(['average', 'min', 'max', 'median']);
@@ -99,13 +100,13 @@ describe('POST /api/pricing/update', () => {
   });
 
   it('rejects a missing strategy', async () => {
-    const response = await request(app(harness())).post('/api/pricing/update').send({});
+    const response = await request(app(harness())).post('/api/pricing/update').set('X-Api-Key', API_KEY).send({});
     expect(response.status).toBe(400);
   });
 
   it('applies the rule and returns what moved', async () => {
     const h = harness();
-    const response = await request(app(h)).post('/api/pricing/update').send({ strategy: 'min' });
+    const response = await request(app(h)).post('/api/pricing/update').set('X-Api-Key', API_KEY).send({ strategy: 'min' });
 
     expect(response.status).toBe(200);
     expect(response.body.changes).toEqual([
@@ -116,7 +117,7 @@ describe('POST /api/pricing/update', () => {
 
   it('writes nothing when asked for a dry run', async () => {
     const h = harness();
-    const response = await request(app(h)).post('/api/pricing/update').send({ strategy: 'min', dryRun: true });
+    const response = await request(app(h)).post('/api/pricing/update').set('X-Api-Key', API_KEY).send({ strategy: 'min', dryRun: true });
 
     expect(response.body).toMatchObject({ dryRun: true, changes: [{ to: 90 }] });
     expect(h.updateVariantPrice).not.toHaveBeenCalled();
@@ -124,7 +125,7 @@ describe('POST /api/pricing/update', () => {
 
   it('rejects a negative maxChangePercent', async () => {
     const response = await request(app(harness()))
-      .post('/api/pricing/update')
+      .post('/api/pricing/update').set('X-Api-Key', API_KEY)
       .send({ strategy: 'min', maxChangePercent: -1 });
     expect(response.status).toBe(400);
   });
@@ -132,14 +133,14 @@ describe('POST /api/pricing/update', () => {
 
 describe('POST /api/pricing/compare', () => {
   it('answers 503 when no competitor source is configured', async () => {
-    const response = await request(app(harness())).post('/api/pricing/compare').send({});
+    const response = await request(app(harness())).post('/api/pricing/compare').set('X-Api-Key', API_KEY).send({});
     expect(response.status).toBe(503);
     expect(response.body.error).toMatch(/No competitor price sources/);
   });
 
   it('collects prices when a source is configured', async () => {
     const h = harness([{ name: 'fake', getCompetitorPrices: async () => [11, 12] }]);
-    const response = await request(app(h)).post('/api/pricing/compare').send({});
+    const response = await request(app(h)).post('/api/pricing/compare').set('X-Api-Key', API_KEY).send({});
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ sources: ['fake'], productsExamined: 1, pricesCollected: 2 });
@@ -149,7 +150,7 @@ describe('POST /api/pricing/compare', () => {
 describe('POST /api/pricing/sync', () => {
   it('pulls the catalogue from Shopify into the repository', async () => {
     const h = harness([], []);
-    const response = await request(app(h)).post('/api/pricing/sync').send({});
+    const response = await request(app(h)).post('/api/pricing/sync').set('X-Api-Key', API_KEY).send({});
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ fetched: 1, stored: 1 });
@@ -223,5 +224,66 @@ describe('POST /webhooks/shopify', () => {
   it('is not mounted at all when no webhook secret is configured', async () => {
     const response = await request(app(harness(), config({ webhookSecret: null }))).post('/webhooks/shopify');
     expect(response.status).toBe(404);
+  });
+});
+
+describe('the shared secret on /api/pricing', () => {
+  it('refuses a request with no key and touches nothing', async () => {
+    const h = harness();
+    const response = await request(app(h)).post('/api/pricing/update').send({ strategy: 'min' });
+
+    expect(response.status).toBe(401);
+    expect(h.updateVariantPrice).not.toHaveBeenCalled();
+  });
+
+  it('refuses a request with the wrong key', async () => {
+    const h = harness();
+    const response = await request(app(h))
+      .post('/api/pricing/update')
+      .set('X-Api-Key', 'not-the-key')
+      .send({ strategy: 'min' });
+
+    expect(response.status).toBe(401);
+    expect(h.updateVariantPrice).not.toHaveBeenCalled();
+  });
+
+  it('refuses a key of the right length but the wrong bytes', async () => {
+    const response = await request(app(harness()))
+      .post('/api/pricing/sync')
+      .set('X-Api-Key', 'x'.repeat(API_KEY.length))
+      .send({});
+
+    expect(response.status).toBe(401);
+  });
+
+  it('covers every pricing route, not only the one that writes', async () => {
+    for (const route of ['/api/pricing/sync', '/api/pricing/compare', '/api/pricing/update']) {
+      const response = await request(app(harness())).post(route).send({});
+      expect([route, response.status]).toEqual([route, 401]);
+    }
+  });
+
+  it('answers 503 naming the variable to set when no key is configured', async () => {
+    const h = harness();
+    const response = await request(app(h, config({}, null)))
+      .post('/api/pricing/update')
+      .set('X-Api-Key', API_KEY)
+      .send({ strategy: 'min' });
+
+    expect(response.status).toBe(503);
+    expect(response.body.detail).toMatch(/PRICING_API_KEY/);
+    expect(h.updateVariantPrice).not.toHaveBeenCalled();
+  });
+
+  it('leaves the webhook route alone: it authenticates its callers by HMAC', async () => {
+    const body = JSON.stringify({ id: 3003, title: 'W', variants: [{ id: 7003, title: 'D', price: '10.00' }] });
+    const response = await request(app(harness([], []), config({}, null)))
+      .post('/webhooks/shopify')
+      .set('Content-Type', 'application/json')
+      .set('X-Shopify-Topic', 'orders/create')
+      .set('X-Shopify-Hmac-Sha256', createHmac('sha256', WEBHOOK_SECRET).update(Buffer.from(body, 'utf8')).digest('base64'))
+      .send(body);
+
+    expect(response.status).toBe(200);
   });
 });

@@ -1,4 +1,5 @@
 import express, { Application, NextFunction, Request, Response } from 'express';
+import { requireApiKey } from './api/middleware/requireApiKey';
 import { createPricingRoutes } from './api/routes/PricingRoutes';
 import { createWebhookRoutes, WebhookRouteOptions } from './api/routes/WebhookRoutes';
 import { Services } from './container';
@@ -27,7 +28,10 @@ export function createApp(services: Services, config: AppConfig, options: AppOpt
     });
   });
 
-  app.use('/api/pricing', createPricingRoutes(services));
+  // Every pricing route is behind the shared secret. The webhook route above is
+  // the only one meant to be reachable from outside, and it verifies its own
+  // caller by HMAC.
+  app.use('/api/pricing', requireApiKey(config.pricing.apiKey), createPricingRoutes(services));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });

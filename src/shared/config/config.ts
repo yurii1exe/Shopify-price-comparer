@@ -21,6 +21,8 @@ export interface AppConfig {
   ebay: EbayConfig | null;
   pricing: {
     maxChangePercent: number;
+    /** Shared secret the /api/pricing routes require. Absent means they answer 503. */
+    apiKey: string | null;
   };
 }
 
@@ -81,6 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         : null,
     pricing: {
       maxChangePercent: Number(env.MAX_PRICE_CHANGE_PERCENT ?? 20),
+      apiKey: env.PRICING_API_KEY?.trim() || null,
     },
   };
 }
