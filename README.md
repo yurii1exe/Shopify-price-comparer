@@ -286,6 +286,25 @@ More on the layer rules in [`src/README.md`](src/README.md).
 
 TypeScript · Node.js · Express · Mongoose / MongoDB · Shopify Admin REST API · eBay Browse API · Jest
 
+## Demo media
+
+One recording, in `docs/`. Everything published from this project is cut from it.
+
+| File | What it shows | Published as |
+|---|---|---|
+| `docs/demo.gif` | 924×696, 72s. The seeded catalogue with the competitor prices collected per product, the shared secret refusing the pricing routes, an HMAC-verified webhook, a live run whose Shopify writes come back 404, and a median dry run whose change limit refuses to cut 169 to 92 | `median-dry-run.mp4`, `median-dry-run.webm`, the poster `median-dry-run.webp`, and the stills `catalogue-competitor-prices.webp`, `pricing-route-auth.webp`, `webhook-hmac.webp` and `shopify-write-failures.webp` |
+
+The published files live in the site repository under
+`TheSite/ClientApp/src/assets/portfolio/shopify-price-comparer/`, with the card thumbnail
+`shopify-price-comparer.webp` one directory above. Each is produced from `docs/demo.gif` with
+ffmpeg — mp4 and webm for the recording, a webp poster beside them, webp for each still — so this
+repository stays the source of truth and the derivatives are regenerated rather than edited.
+
+They feed the `shopify-price-comparer` entry on disit.tech/work, whose case study is at
+`/services/software-development/shopify-price-comparer`. **Note the case:** the repository is
+`Shopify-price-comparer` with a capital S, the site entry and its asset folder are lowercase
+`shopify-price-comparer`.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
